@@ -31,6 +31,8 @@ RUN apt-get update && \
     ca-certificates \
     curl \
     cmake \
+    python3-dev \
+    python3-pip \
     && \
     rm -rf /var/lib/apt/lists/*
 
