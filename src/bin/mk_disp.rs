@@ -1,5 +1,5 @@
 use std::path::Path;
-use wordfreak::opensubs18::{mmap_file, iter_subtitles, OpenSubsDoc};
+use wordfreak::opensubs18::mmap_file;
 use wordfreak::termdocmat::VocabMap;
 use rayon::prelude::*;
 use piz::ZipArchive;

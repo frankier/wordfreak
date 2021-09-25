@@ -5,7 +5,6 @@ use std::iter::once;
 use std::str::from_utf8;
 use itertools::Itertools;
 
-use arrow2::io::parquet::write::to_parquet_schema;
 use arrow2::array::{Array, Utf8Array, UInt32Array, Float64Array};
 use arrow2::datatypes::{Field, Schema, DataType};
 use arrow2::io::parquet::write::{

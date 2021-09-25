@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use crossbeam_channel::unbounded;
 use std::thread;
 use wordfreak::termdocmat::{get_numberbatch_vocab, TermDocMatWriter};
-use wordfreak::opensubs18::{mmap_file, iter_subtitles, OpenSubsDoc, next_opensubs_doc_token};
+use wordfreak::opensubs18::{mmap_file, iter_subtitles, next_opensubs_doc_token};
 use rayon::prelude::*;
 use piz::ZipArchive;
 
