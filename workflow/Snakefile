@@ -1,0 +1,105 @@
+from snakemake.utils import Paramspace
+import pandas
+from os.path import join as pjoin
+from os import chdir
+
+
+DOWNLOADS = "downloads"
+OUTPUTS = "outputs"
+
+
+COOKIES_MESSAGE = """
+First go to https://korp.csc.fi/korp/ -- sign in and agree to the terms of the
+the needed corpora and then save your korp cookie as a txt file to {}. You can
+use e.g. https://addons.mozilla.org/en-US/firefox/addon/cookies-txt/
+"""
+
+
+WMT_NEWSCRAWL_URLS = [f"http://newscrawl:acrawl4me@data.statmt.org/news-crawl/doc/wmt19/en-doc/news-docs.{year}.en.filtered.gz" for range(2007, 2019)]
+
+
+df = pandas.DataFrame.from_records(
+    index=["lang", "genre", "corpus", "urls", "type", "has_lemmas"],
+    date=[
+        ("fi", "encylopedia", "wikipedia", ["https://korp.csc.fi/download/wikipedia-fi/wikipedia-fi-2017-src/wikipedia-fi-2017-src.zip"], "vrt", True),
+        ("fi", "forum", "suomi24", ["https://korp.csc.fi/download/Suomi24/2001-2017/suomi24-2001-2017-vrt-v1-2.zip"], "vrt", True),
+        ("fi", "legal", "acquis-ftb3", ["https://korp.csc.fi/download/acquis-ftb3/acquis-ftb3.zip"], "vrt", True), # Is it VRT?
+        ("fi", "legal", "finlex", ["https://opus.nlpl.eu/download.php?f=Finlex/v2018/parsed/fi.zip"], "opus-finlex", True),
+        ("fi", "legal", "europarl", ["https://opus.nlpl.eu/download.php?f=Europarl/v8/parsed/fi.zip"], "opus-europarl", True),
+        ("fi", "news", "yle", ["https://korp.csc.fi/download/YLE/fi/.zip/ylenews-fi-2011-2018-vrt.zip"], "vrt", True),
+        ("fi", "news", "stt", ["https://korp.csc.fi/download/STT/stt-fi-1992-2018-conllu-src/stt-fi-1992-2018-conllu-src.zip"], "conllu", True),
+        ("fi", "subtitles", "opensub18", ["https://korp.csc.fi/download/opensubtitles-fi/opensub-fi-2017-src/opensub-fi-2017-src.zip"], "vrt", True),
+        ("en", "legal", "europarl", ["https://opus.nlpl.eu/download.php?f=Europarl/v8/parsed/en.zip"], "opus-europarl", True),
+        ("en", "news", "newscrawl", WMT_NEWSCRAWL_URLS, "wmt19", False),
+        ("en", "subtitles", "opensub18", ["https://opus.nlpl.eu/download.php?f=OpenSubtitles/v2018/parsed/en.zip"], "opus-opensub18", True),
+        # Could add e.g. Tatoeba or LING-8 but would need to somehow get fake documents (use users?)
+        # https://opus.nlpl.eu/download.php?f=Tatoeba/v2021-07-22/parsed/en.zip
+    ]
+)
+df["basenames"] = df["urls"]
+flat_df = df.explode(["urls", "basenames"]).rename(columns({"urls": "url", "basenames": "basename"}))
+full_paramspace = Paramspace(df)
+full_flat_paramspace = Paramspace(flat_df)
+df_key = ["lang", "genre", "corpus", "basename"]
+basename_url_lookup = dict(zip(flat_df[df_key], flat_df["url"]))
+is_korp = flat_df["url"].str.startswith("https://korp.csc.fi/")
+basename_df = flat_df[df_key]
+basename_paramspace = Paramspace(basename_df)
+korp_basename_df = basename_df[is_korp]
+other_basename_df = basename_df[~is_korp]
+korp_paramspace = Paramspace(korp_basename_df)
+other_paramspace = Paramspace(other_basename_df)
+corpus_paramspace = Paramspace(df[df_key[:-1]])
+
+
+rule all_divergences:
+    input:
+        expand(pjoin(OUTPUTS, "{params}.parquet"), params=corpus_paramspace.instance_patterns)
+
+
+rule cookies_explanation:
+    output:
+        "korp_cookies.txt"
+    run:
+        print(COOKIES_MESSAGE.format(output))
+        sys.exit(-1)
+
+
+rule download_korp:
+    input:
+        "korp_cookies.txt"
+    output:
+        pjoin(DOWNLOADS, korp_paramspace.wildcard_pattern)
+    params:
+        url_row = full_flat_paramspace.instance
+    shell:
+        "mkdir -p $(dirname {output}) && " + \
+        " wget --load-cookies {input} " + \
+        url_row["url"] + \
+        " -O {output}"
+
+
+rule download_other:
+    output:
+        pjoin(DOWNLOADS, other_paramspace.wildcard_pattern)
+    params:
+        url_row = full_flat_paramspace.instance
+    shell:
+        "mkdir -p $(dirname {output}) && " + \
+        " wget " + \
+        url_row["url"] + \
+        " -O {output}"
+
+
+rule get_divergences:
+    input:
+        expand(pjoin(DOWNLOADS, "{params}"), params=corpus_row.instance_patterns)
+    params:
+        corpus_row = full_paramspace.instance
+    output:
+        pjoin(OUTPUTS, corpus_paramspace.wildcard_pattern + ".parquet")
+    shell:
+        "mk_disp " + ("--lemma" if corpus_row["has_lemmas"] else "")
+        " --corpus-type " + corpus_row["type"] +
+        " {output}" +
+        " {input}"
