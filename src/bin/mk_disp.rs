@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use itertools::Itertools;
 use std::convert::TryInto;
 use superslice::*;
-use wordfreak::opensubs18::iter_doc_bows;
+use wordfreak::opensubs18::{iter_doc_bows, iter_flat_tokens};
 use wordfreak::parquet2::write_parquet;
 
 
@@ -96,11 +96,8 @@ fn one_scan_index_count(zip_reader: &ZipArchive) -> (VocabMap, Vec<u32>, u32) {
     pipe_reader.join().unwrap()
     */
     let timer = howlong::ProcessCPUTimer::new();
-    let doc_iterator = iter_subtitles(&zip_reader);
-    let mut word_freqs_strings = doc_iterator
-        .flat_map_iter(|reader| {
-            OpenSubsDoc::new(reader, LEMMA_KEY)
-        }).fold(
+    let mut word_freqs_strings = iter_flat_tokens(zip_reader, LEMMA_KEY)
+        .fold(
             || {
                 return BTreeMap::<Box<[u8]>, u32>::new();
             },

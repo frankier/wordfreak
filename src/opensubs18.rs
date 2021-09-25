@@ -86,6 +86,13 @@ pub fn next_opensubs_doc_token<'a, R, F: FnMut(&[u8]) -> R>(
     }
 }
 
+pub fn iter_flat_tokens<'a>(zip_reader: &'a ZipArchive<'a>, target_attr_key: &'a [u8]) -> impl ParallelIterator<Item=Box<[u8]>> + 'a {
+    iter_subtitles(&zip_reader)
+        .flat_map_iter(move |reader| {
+            OpenSubsDoc::new(reader, target_attr_key)
+        })
+}
+
 pub fn iter_doc_bows<'a>(zip_reader: &'a ZipArchive<'a>, vocab: &'a VocabMap, target_attr_key: &'a [u8]) -> impl ParallelIterator<Item=(u32, BTreeMap<u32, u32>)> + 'a {
     iter_subtitles(&zip_reader).map_init(
         || Vec::<u8>::new(), move |xml_read_buf, mut reader| {
