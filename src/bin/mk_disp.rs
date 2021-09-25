@@ -47,11 +47,11 @@ struct MkDisp {
 
     /// path
     #[argh(positional)]
-    input: String,
+    output: String,
 
     /// path
     #[argh(positional)]
-    output: String,
+    input: Vec<String>,
 }
 
 static LEMMA_KEY: &[u8] = b"lemma";
@@ -147,7 +147,13 @@ fn kl_div_elem(v: u32, f: u32, d: u32, l: u32) -> f64 {
 fn main() {
     let args: MkDisp = argh::from_env();
 
-    let mmap = mmap_file(Path::new(&args.input));
+    if args.input.len() == 0 {
+        panic!("Need at least one input")
+    } else if args.input.len() > 1 {
+        panic!("Multiple inputs not supported yet")
+    }
+
+    let mmap = mmap_file(Path::new(&args.input[0]));
     let zip_reader: ZipArchive = ZipArchive::new(&mmap).unwrap();
     let (vocab, word_counts, total_words) = one_scan_index_count(&zip_reader);
 
