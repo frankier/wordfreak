@@ -19,6 +19,6 @@ jobs:
         uses: whoan/docker-build-with-cache-action@v5
         with:
           registry: ghcr.io
-          image_name: fshdnc/eb_class
+          image_name: frankier/wordfreak
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
