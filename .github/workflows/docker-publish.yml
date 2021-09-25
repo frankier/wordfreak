@@ -1,0 +1,24 @@
+name: Docker
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build_publish_containers:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v2
+
+      - name: Checkout submodules
+        uses: textbook/git-checkout-submodule-action@master
+
+      - name: Build/push
+        uses: whoan/docker-build-with-cache-action@v5
+        with:
+          registry: ghcr.io
+          image_name: fshdnc/eb_class
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
