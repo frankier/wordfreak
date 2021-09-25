@@ -2,7 +2,7 @@ FROM rust:1.46 AS build
 
 WORKDIR /build
 COPY . /build
-RUN cargo install --release --path .
+RUN cargo install --path .
 
 FROM debian:bullseye-slim
 
