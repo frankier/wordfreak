@@ -1,4 +1,13 @@
-FROM rust:1.46 AS build
+FROM rust:1.55 AS build
+
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive \
+    apt-get dist-upgrade -yq && \
+    DEBIAN_FRONTEND=noninteractive \
+    apt-get install -yq \
+    cmake \
+    && \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
 COPY . /build
