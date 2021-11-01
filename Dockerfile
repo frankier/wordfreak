@@ -49,4 +49,4 @@ RUN poetry export \
     rm requirements.txt && \
     rm -rf /root/.cache
 RUN ln -sf /usr/bin/python3 /usr/bin/python
-ADD workflow /opt/wordfreak/
+ADD workflow /opt/wordfreak/workflow 
