@@ -15,12 +15,12 @@ use e.g. https://addons.mozilla.org/en-US/firefox/addon/cookies-txt/
 """
 
 
-WMT_NEWSCRAWL_URLS = [f"http://newscrawl:acrawl4me@data.statmt.org/news-crawl/doc/wmt19/en-doc/news-docs.{year}.en.filtered.gz" for range(2007, 2019)]
+WMT_NEWSCRAWL_URLS = [f"http://newscrawl:acrawl4me@data.statmt.org/news-crawl/doc/wmt19/en-doc/news-docs.{year}.en.filtered.gz" for year in range(2007, 2019)]
 
 
 df = pandas.DataFrame.from_records(
-    index=["lang", "genre", "corpus", "urls", "type", "has_lemmas"],
-    date=[
+    columns=["lang", "genre", "corpus", "urls", "type", "has_lemmas"],
+    data=[
         ("fi", "encylopedia", "wikipedia", ["https://korp.csc.fi/download/wikipedia-fi/wikipedia-fi-2017-src/wikipedia-fi-2017-src.zip"], "vrt", True),
         ("fi", "forum", "suomi24", ["https://korp.csc.fi/download/Suomi24/2001-2017/suomi24-2001-2017-vrt-v1-2.zip"], "vrt", True),
         ("fi", "legal", "acquis-ftb3", ["https://korp.csc.fi/download/acquis-ftb3/acquis-ftb3.zip"], "vrt", True), # Is it VRT?
@@ -36,20 +36,22 @@ df = pandas.DataFrame.from_records(
         # https://opus.nlpl.eu/download.php?f=Tatoeba/v2021-07-22/parsed/en.zip
     ]
 )
-df["basenames"] = df["urls"]
-flat_df = df.explode(["urls", "basenames"]).rename(columns({"urls": "url", "basenames": "basename"}))
+flat_df = df.explode(["urls"]).rename(columns={"urls": "url"})
+flat_df["basename"] = flat_df["url"].map(lambda url: url.rsplit("/", 1)[-1])
 full_paramspace = Paramspace(df)
 full_flat_paramspace = Paramspace(flat_df)
-df_key = ["lang", "genre", "corpus", "basename"]
-basename_url_lookup = dict(zip(flat_df[df_key], flat_df["url"]))
+df_key = ["is_korp", "lang", "genre", "corpus", "basename"]
+corpus_key = df_key[1:-1]
+#basename_url_lookup = dict(zip(flat_df[df_key], flat_df["url"]))
 is_korp = flat_df["url"].str.startswith("https://korp.csc.fi/")
+flat_df.insert(0, "is_korp", is_korp)
 basename_df = flat_df[df_key]
 basename_paramspace = Paramspace(basename_df)
-korp_basename_df = basename_df[is_korp]
-other_basename_df = basename_df[~is_korp]
+korp_basename_df = basename_df[is_korp][df_key[1:]]
+other_basename_df = basename_df[~is_korp][df_key[1:]]
 korp_paramspace = Paramspace(korp_basename_df)
 other_paramspace = Paramspace(other_basename_df)
-corpus_paramspace = Paramspace(df[df_key[:-1]])
+corpus_paramspace = Paramspace(df[corpus_key])
 
 
 rule all_divergences:
@@ -69,37 +71,46 @@ rule download_korp:
     input:
         "korp_cookies.txt"
     output:
-        pjoin(DOWNLOADS, korp_paramspace.wildcard_pattern)
+        pjoin(DOWNLOADS, "is_korp~True", korp_paramspace.wildcard_pattern)
     params:
         url_row = full_flat_paramspace.instance
     shell:
         "mkdir -p $(dirname {output}) && " + \
         " wget --load-cookies {input} " + \
-        url_row["url"] + \
+        " {params.url_row.url}" + \
         " -O {output}"
 
 
 rule download_other:
     output:
-        pjoin(DOWNLOADS, other_paramspace.wildcard_pattern)
+        pjoin(DOWNLOADS, "is_korp~False", other_paramspace.wildcard_pattern)
     params:
         url_row = full_flat_paramspace.instance
     shell:
         "mkdir -p $(dirname {output}) && " + \
         " wget " + \
-        url_row["url"] + \
+        " {params.url_row.url}" + \
         " -O {output}"
 
 
+def divergences_input(wildcards):
+    corpus_row = corpus_paramspace.instance(wildcards)
+    sub_df = flat_df[(flat_df[list(corpus_row.keys())] == pandas.Series(corpus_row)).all(axis=1)][df_key]
+    return [pjoin(DOWNLOADS, inst) for inst in Paramspace(sub_df).instance_patterns]
+
+
+# TODO: join multi-file corpora at this point
 rule get_divergences:
     input:
-        expand(pjoin(DOWNLOADS, "{params}"), params=corpus_row.instance_patterns)
+        divergences_input
     params:
         corpus_row = full_paramspace.instance
     output:
         pjoin(OUTPUTS, corpus_paramspace.wildcard_pattern + ".parquet")
-    shell:
-        "mk_disp " + ("--lemma" if corpus_row["has_lemmas"] else "")
-        " --corpus-type " + corpus_row["type"] +
-        " {output}" +
-        " {input}"
+    run:
+        shell(
+            "mk_disp " + ("--lemma" if params.corpus_row["has_lemmas"] else "") +
+            " --corpus-type " + params.corpus_row["type"] +
+            " {output}" +
+            " {input}"
+        )
