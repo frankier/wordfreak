@@ -54,6 +54,10 @@ other_paramspace = Paramspace(other_basename_df)
 corpus_paramspace = Paramspace(df[corpus_key])
 
 
+def pick_df_dict(df, dic):
+    return df[(df[list(dic.keys())] == pandas.Series(dic)).all(axis=1)]
+
+
 rule all_divergences:
     input:
         expand(pjoin(OUTPUTS, "{params}.parquet"), params=corpus_paramspace.instance_patterns)
@@ -67,17 +71,24 @@ rule cookies_explanation:
         sys.exit(-1)
 
 
+def get_url(wc):
+    inst = full_flat_paramspace.instance(wc)
+    sub_df = pick_df_dict(flat_df, inst)
+    res = sub_df["url"].iloc[0]
+    return res
+
+
 rule download_korp:
     input:
         "korp_cookies.txt"
     output:
         pjoin(DOWNLOADS, "is_korp~True", korp_paramspace.wildcard_pattern)
     params:
-        url_row = full_flat_paramspace.instance
+        url = get_url
     shell:
         "mkdir -p $(dirname {output}) && " + \
         " wget --load-cookies {input} " + \
-        " {params.url_row.url}" + \
+        " {params.url}" + \
         " -O {output}"
 
 
@@ -85,18 +96,23 @@ rule download_other:
     output:
         pjoin(DOWNLOADS, "is_korp~False", other_paramspace.wildcard_pattern)
     params:
-        url_row = full_flat_paramspace.instance
+        url = get_url
     shell:
         "mkdir -p $(dirname {output}) && " + \
         " wget " + \
-        " {params.url_row.url}" + \
+        " {params.url}" + \
         " -O {output}"
 
 
 def divergences_input(wildcards):
     corpus_row = corpus_paramspace.instance(wildcards)
-    sub_df = flat_df[(flat_df[list(corpus_row.keys())] == pandas.Series(corpus_row)).all(axis=1)][df_key]
+    sub_df = pick_df_dict(flat_df, corpus_row)[df_key]
     return [pjoin(DOWNLOADS, inst) for inst in Paramspace(sub_df).instance_patterns]
+
+
+rule download_all:
+    input:
+        [pjoin(DOWNLOADS, inst) for inst in basename_paramspace.instance_patterns]
 
 
 # TODO: join multi-file corpora at this point
@@ -104,7 +120,7 @@ rule get_divergences:
     input:
         divergences_input
     params:
-        corpus_row = full_paramspace.instance
+        corpus_row = lambda wc: pick_df_dict(basename_df, corpus_paramspace.instance(wc))
     output:
         pjoin(OUTPUTS, corpus_paramspace.wildcard_pattern + ".parquet")
     run:
