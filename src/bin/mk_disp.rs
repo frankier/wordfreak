@@ -10,8 +10,11 @@ use std::collections::BTreeMap;
 use itertools::Itertools;
 use std::convert::TryInto;
 use superslice::*;
-use wordfreak::opensubs18::{iter_doc_bows, iter_flat_tokens};
+use wordfreak::opensubs18::{iter_doc_bows, iter_flat_tokens, filter_xml_entries, MinEntries, mk_default_pool};
 use wordfreak::parquet2::write_parquet;
+use wordfreak::dispersion::{AccElement, acc_word, reduce_word, norm_word, FinalColumns};
+use rayon::current_num_threads;
+use memmap::Mmap;
 
 
 enum CorpusType {
@@ -58,7 +61,7 @@ static LEMMA_KEY: &[u8] = b"lemma";
 
 /// Indexes the collection and at the same time collects counts per word, as well as the total
 /// token count.
-fn one_scan_index_count(zip_reader: &ZipArchive) -> (VocabMap, Vec<u32>, u32) {
+fn one_scan_index_count(xml_entries: &MinEntries, mmap: &Mmap) -> (VocabMap, Vec<u32>, u32) {
     /*
     let args: MkDisp = argh::from_env();
     let (sender, receiver) = unbounded();
@@ -96,7 +99,11 @@ fn one_scan_index_count(zip_reader: &ZipArchive) -> (VocabMap, Vec<u32>, u32) {
     pipe_reader.join().unwrap()
     */
     let timer = howlong::ProcessCPUTimer::new();
-    let mut word_freqs_strings = iter_flat_tokens(zip_reader, LEMMA_KEY)
+    //let pool = mk_default_pool();
+    //let pool2 = mk_default_pool();
+    //let mut word_freqs_strings = pool.scope(|scope| {
+        //pool2.install(|| {
+    let mut word_freqs_strings = iter_flat_tokens(xml_entries, mmap, LEMMA_KEY)
         .fold(
             || {
                 return BTreeMap::<Box<[u8]>, u32>::new();
@@ -121,9 +128,18 @@ fn one_scan_index_count(zip_reader: &ZipArchive) -> (VocabMap, Vec<u32>, u32) {
                 return acc;
             }
         ).into_iter().collect_vec();
+        //})
+    //});
     println!("Gather counts {}", timer.elapsed());
     let timer = howlong::ProcessCPUTimer::new();
-    word_freqs_strings.sort_unstable_by(|(word_a, freq_a), (word_b, freq_b)| freq_b.partial_cmp(freq_a).unwrap().then_with(|| word_a.partial_cmp(word_b).unwrap()));
+    word_freqs_strings
+        .sort_unstable_by(
+            |(word_a, freq_a), (word_b, freq_b)| {
+                freq_b
+                    .partial_cmp(freq_a)
+                    .unwrap()
+                    .then_with(|| word_a.partial_cmp(word_b).unwrap())
+            });
     let mut vocab: VocabMap = VocabMap::default();
     let mut word_freqs_indexed = Vec::with_capacity(word_freqs_strings.len());
     let mut total_words: u32 = 0;
@@ -136,11 +152,6 @@ fn one_scan_index_count(zip_reader: &ZipArchive) -> (VocabMap, Vec<u32>, u32) {
     (vocab, word_freqs_indexed, total_words)
 }
 
-fn kl_div_elem(v: u32, f: u32, d: u32, l: u32) -> f64 {
-    let v_by_f = (v as f64) / (f as f64);
-    v_by_f * f64::log2(v_by_f * (l as f64) / (d as f64))
-}
-
 fn main() {
     let args: MkDisp = argh::from_env();
 
@@ -150,25 +161,37 @@ fn main() {
         panic!("Multiple inputs not supported yet")
     }
 
+    println!("Processing using {} threads", current_num_threads());
+    let timer = howlong::ProcessCPUTimer::new();
     let mmap = mmap_file(Path::new(&args.input[0]));
     let zip_reader: ZipArchive = ZipArchive::new(&mmap).unwrap();
-    let (vocab, word_counts, total_words) = one_scan_index_count(&zip_reader);
+    let xml_entries = filter_xml_entries(&zip_reader);
+    println!("Read EOCDR {}", timer.elapsed());
+
+    let num_docs = xml_entries.len() as u32;
+    let (vocab, word_counts, total_words) = one_scan_index_count(&xml_entries, &mmap);
 
     let timer = howlong::ProcessCPUTimer::new();
-    let kl_divs = iter_doc_bows(&zip_reader, &vocab, LEMMA_KEY)
+    //let pool = mk_default_pool();
+    //let pool2 = mk_default_pool();
+    //let kl_divs = pool.scope(|scope| {
+        //pool2.install(|| {
+    let word_accs = iter_doc_bows(&xml_entries, &mmap, &vocab, LEMMA_KEY)
         .fold(
             || {
-                return BTreeMap::<u32, f64>::new();
+                return BTreeMap::<u32, AccElement>::new();
             },
             |mut acc, (doc_words_total, doc_word_counts)| {
                 for (elem, cnt) in doc_word_counts.into_iter() {
-                    *acc.entry(elem).or_insert(0.0f64) += kl_div_elem(cnt, word_counts[elem as usize], doc_words_total, total_words);
+                    let left = acc.entry(elem).or_insert(AccElement::zero());
+                    let word_count = word_counts[elem as usize];
+                    *left = reduce_word(left, &acc_word(cnt, word_count, doc_words_total, total_words, num_docs));
                 }
                 return acc;
             }
         ).reduce(
             || {
-                return BTreeMap::<u32, f64>::new();
+                return BTreeMap::<u32, AccElement>::new();
             },
             |left, right| {
                 let (mut acc, rest) = if left.len() < right.len() {
@@ -177,19 +200,37 @@ fn main() {
                     (left, right)
                 };
                 for (elem, div) in rest.into_iter() {
-                    *acc.entry(elem).or_insert(0.0f64) += div
+                    let left = acc.entry(elem).or_insert(AccElement::zero());
+                    *left = reduce_word(left, &div);
                 }
                 acc
             }
         );
+        //})
+    //});
+    let mut cols = FinalColumns::with_capacity(total_words as usize);
+    word_accs.into_iter().for_each(|(word_id, elem)| {
+        norm_word(&mut cols, elem, word_counts[word_id as usize], total_words, num_docs)
+    });
     println!("Gather KL divergences {}", timer.elapsed());
     let timer = howlong::ProcessCPUTimer::new();
-    let kl_divs_vec = kl_divs.into_values().collect_vec();
     let (mut words, index): (Vec<Box<[u8]>>, Vec<u32>) = vocab.into_iter().unzip();
     let mut index_islice = index.into_iter().map(|x| x as isize).collect_vec();
     words.as_mut_slice().apply_inverse_permutation(index_islice.as_mut_slice());
     println!("Postprocessing of KL divergences {}", timer.elapsed());
     let timer = howlong::ProcessCPUTimer::new();
-    write_parquet(Path::new(&args.output), words.as_slice(), word_counts.as_slice(), &["kl_div"], &[kl_divs_vec.as_slice()]);
+    write_parquet(
+        Path::new(&args.output),
+        words.as_slice(),
+        word_counts.as_slice(),
+        &[
+            "kl_div",
+            "idf",
+        ],
+        &[
+            cols.kl_div.as_slice(),
+            cols.idf.as_slice(),
+        ]
+    );
     println!("Writing to parquet file {}", timer.elapsed());
 }

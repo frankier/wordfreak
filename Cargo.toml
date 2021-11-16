@@ -8,7 +8,7 @@ edition = "2018"
 quick-xml = "0.22.0"
 fnv = "1.0.3"
 zip = "0.5.11"
-piz = "0.4.0"
+piz = { git = "https://github.com/frankier/piz-rs.git", branch = "without-ref" }
 memmap = "0.7.0"
 owning_ref = "0.4.1"
 rayon = "1.5.1"
@@ -25,4 +25,5 @@ internal-iterator = "0.1.2"
 
 [profile.release]
 lto = "fat"
-codegen-units = 1
+#codegen-units = 1
+debug = true

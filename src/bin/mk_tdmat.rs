@@ -5,8 +5,9 @@ use std::collections::BTreeMap;
 use crossbeam_channel::unbounded;
 use std::thread;
 use wordfreak::termdocmat::{get_numberbatch_vocab, TermDocMatWriter};
-use wordfreak::opensubs18::{mmap_file, iter_subtitles, next_opensubs_doc_token};
+use wordfreak::opensubs18::{mmap_file, iter_subtitles_whole_file, next_opensubs_doc_token, filter_xml_entries};
 use rayon::prelude::*;
+use rayon::current_num_threads;
 use piz::ZipArchive;
 
 
@@ -14,6 +15,7 @@ static LEMMA_KEY: &[u8] = b"lemma";
 
 
 fn main() {
+    println!("Processing using {} threads", current_num_threads());
     let args: Vec<String> = env::args().collect();
     println!("Reading vocab");
     let vocab = get_numberbatch_vocab(&args[2]);
@@ -39,7 +41,8 @@ fn main() {
 
     let mmap = mmap_file(Path::new(&args[1]));
     let zip_reader: ZipArchive = ZipArchive::new(&mmap).unwrap();
-    iter_subtitles(&zip_reader).for_each_init(
+    let xml_entries = filter_xml_entries(&zip_reader);
+    iter_subtitles_whole_file(&xml_entries, &mmap).for_each_init(
         || Vec::<u8>::new(), |mut xml_read_buf, mut reader| {
             let mut counts: BTreeMap<u32, u32> = BTreeMap::new();
             // XXX: Could have some kind of pool for these
