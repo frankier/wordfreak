@@ -8,6 +8,7 @@ authors = ["Frankie Robertson <frankie@robertson.name>"]
 python = "^3.8"
 snakemake = "^6.7.0"
 pandas = "^1.3.4"
+pyarrow = "^6.0.0"
 
 [tool.poetry.dev-dependencies]
 
