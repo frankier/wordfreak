@@ -58,8 +58,8 @@ pub struct FinalColumns {
     pub kl_div: Vec<f64>,
     pub idf: Vec<f64>,
     pub vc: Vec<f64>,
-    pub juillands_d: Vec<f64>,
-    pub carrols_d: Vec<f64>,
+    //pub juillands_d: Vec<f64>,
+    //pub carrols_d: Vec<f64>,
     pub zipf: Vec<f64>
 }
 
@@ -69,8 +69,8 @@ impl FinalColumns {
             kl_div: Vec::with_capacity(capacity),
             idf: Vec::with_capacity(capacity),
             vc: Vec::with_capacity(capacity),
-            juillands_d: Vec::with_capacity(capacity),
-            carrols_d: Vec::with_capacity(capacity),
+            //juillands_d: Vec::with_capacity(capacity),
+            //carrols_d: Vec::with_capacity(capacity),
             zipf: Vec::with_capacity(capacity),
         }
     }
@@ -82,7 +82,7 @@ pub fn norm_word(cols: &mut FinalColumns, elem: AccElement, f: u32, l: u32, n: u
     cols.kl_div.push(elem.kl_div);
     cols.idf.push((n as f64 / elem.occurences as f64).log10());
     cols.vc.push((elem.sd_v_acc / n as f64).sqrt() / mean_v);
-    cols.juillands_d.push();
-    cols.carrols_d.push();
+    //cols.juillands_d.push();
+    //cols.carrols_d.push();
     cols.zipf.push(((f as f64 * 1000000000.0f64) / l as f64).log10());
 }
