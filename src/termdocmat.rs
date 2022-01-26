@@ -1,40 +1,8 @@
 use std::io::prelude::*;
 use std::io::BufWriter;
-use std::io::BufRead;
 use std::path::Path;
-use std::str;
 use std::fs::{create_dir_all, File};
-use std::io::BufReader;
 
-use fnv::FnvHashMap;
-
-pub type VocabMap = FnvHashMap<Box<[u8]>, u32>;
-
-
-pub fn get_numberbatch_vocab(in_path: &str) -> VocabMap {
-    // XXX: Inefficient: reads a bunch of stuff just to throw it away and then copies the vocab
-    let file = File::open(in_path).unwrap();
-    let mut reader = BufReader::new(file);
-    let mut buf = Vec::<u8>::with_capacity(64);
-    let mut vocab = FnvHashMap::<Box<[u8]>, u32>::default();
-    let mut idx = 0;
-    loop {
-        let read_bytes = reader.read_until(b' ', &mut buf).unwrap();
-        if read_bytes == 0 {
-            break;
-        }
-        vocab.insert(buf.as_slice()[..buf.len()-1].to_owned().into_boxed_slice(), idx);
-        buf.clear();
-        // XXX: Strictly we would prefer to have a discard_until
-        let read_bytes = reader.read_until(b'\n', &mut buf).unwrap();
-        if read_bytes == 0 {
-            break;
-        }
-        buf.clear();
-        idx += 1;
-    }
-    return vocab;
-}
 
 pub struct TermDocMatWriter {
     vocab_len: u64,

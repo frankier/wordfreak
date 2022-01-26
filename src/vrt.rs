@@ -1,33 +1,33 @@
 use std::io::BufReader;
 use std::io;
+use std::path::Path;
+use std::collections::BTreeMap;
 
-use piz::ZipArchive;
+use memmap::Mmap;
 use quick_xml::events::Event;
-use rayon::prelude::*;
 use piz::read::FileMetadata;
 use std::ffi::OsStr;
-use internal_iterator::InternalIterator;
-
-// Should probably be bigger than normal because deflate adds latency(?)
-const READ_CHUNK_SIZE: usize = 64 * 1024;
+use crate::vocab::{VocabBuilder, VocabMap};
+use crate::types::{Corpus, DocBow};
+use crate::zip::{MinEntries, open_piz, EntryBufReader};
+use crossbeam_channel::{unbounded, bounded, Receiver};
+use crossbeam::thread::Scope;
+use crate::zip::{read_buf, UNZIP_READERS};
+use crate::parallel::partition;
+use crate::conllu::grab_lemma;
 
 
 fn is_vrt_file(entry: &FileMetadata) -> bool {
-    entry.is_file() && entry.path.extension().and_then(OsStr::to_str) == Some("vrt")
+    if !entry.is_file() {
+        return false;
+    }
+    if let Some(ext) = entry.path.extension().and_then(OsStr::to_str) {
+        ext.to_lowercase() == "vrt"
+    } else {
+        false
+    }
 }
 
-
-pub fn iter_readers<'a, 'b>(zip_reader: &'a ZipArchive<'b>) -> impl ParallelIterator<Item=quick_xml::Reader<BufReader<Box<dyn std::io::Read + Send + 'b>>>> + 'a {
-    zip_reader.entries().par_iter().filter_map(move |entry| {
-        if is_vrt_file(entry) {
-            Some(quick_xml::Reader::from_reader(
-                BufReader::with_capacity(READ_CHUNK_SIZE, zip_reader.read(entry).unwrap())
-            ))
-        } else {
-            None
-        }
-    })
-}
 
 struct VrtFile<'a, 'b, F> {
     buf: Vec::<u8>,
@@ -40,7 +40,7 @@ impl<'a, 'b, F> VrtFile<'a, 'b, F> {
         reader: &'b mut quick_xml::Reader<BufReader<Box<dyn io::Read + Send + 'a>>>,
         proc_doc: F
     ) -> VrtFile<'a, 'b, F> {
-        VrtFile { buf: Vec::new(), reader, proc_doc }
+        VrtFile::new_with_buf(Vec::new(), reader, proc_doc)
     }
 
     fn new_with_buf(
@@ -63,7 +63,7 @@ impl<'a, 'b, R, F: FnMut(VrtText) -> Option<R>> Iterator for VrtFile<'a, 'b, F> 
                         b"text" => {
                             return (self.proc_doc)(VrtText {
                                 reader: self.reader,
-                                buf: &mut self.buf,
+                                buf: &mut self.buf
                             });
                         },
                         _ => {}
@@ -80,15 +80,13 @@ impl<'a, 'b, R, F: FnMut(VrtText) -> Option<R>> Iterator for VrtFile<'a, 'b, F> 
 
 struct VrtText<'a, 'b> {
     reader: &'a mut quick_xml::Reader<BufReader<Box<dyn io::Read + Send + 'b>>>,
-    buf: &'a mut Vec::<u8>
+    buf: &'a mut Vec::<u8>,
+
 }
 
-impl<'a, 'b> InternalIterator for VrtText<'a, 'b> {
-    type Item = &'a [u8];
-
-    fn find_map<T, F>(self, mut f: F) -> Option<T>
-    where
-        F: FnMut(&'a [u8]) -> Option<T>
+impl<'a, 'b> VrtText<'a, 'b> {
+    fn for_each<F>(self, mut f: F)
+    where F: FnMut(&[u8])
     {
         let mut in_sent = false;
         loop {
@@ -104,7 +102,7 @@ impl<'a, 'b> InternalIterator for VrtText<'a, 'b> {
                 Ok(Event::End(ref e)) => {
                     match e.name() {
                         b"text" => {
-                            return None;
+                            return;
                         },
                         b"sentence" => {
                             in_sent = false
@@ -114,14 +112,18 @@ impl<'a, 'b> InternalIterator for VrtText<'a, 'b> {
                 },
                 Ok(Event::Text(ref e)) => {
                     if in_sent {
-                        println!("{:?}", e);
-                        let res = f(b"hello");
-                        if res.is_some() {
-                            return res
-                        }
+                        let unescaped = e.unescaped().unwrap();
+                        f(grab_lemma(unescaped.as_ref()));
                     }
                 },
-                Ok(Event::Eof) => panic!("Premature end! Ended inside <text>."),
+                Ok(Event::Eof) => {
+                    // Filename might be useful
+                    eprintln!(
+                        "Premature end of VRT file at {}! Ended inside <text>.",
+                        self.reader.buffer_position()
+                    );
+                    return;
+                },
                 Err(e) => panic!("Error at position {}: {:?}", self.reader.buffer_position(), e),
                 _ => (),
             }
@@ -130,16 +132,114 @@ impl<'a, 'b> InternalIterator for VrtText<'a, 'b> {
     }
 }
 
-pub fn iter_flat_tokens<'a>(zip_reader: &'a ZipArchive<'a>, target_attr_key: &'a [u8]) -> impl ParallelIterator<Item=Box<[u8]>> + 'a {
-    iter_readers(zip_reader)
-        .flat_map_iter(move |mut reader| {
-            let mut res = vec!();
-            VrtFile::new(&mut reader, |vrt_text: VrtText| -> Option<()> {
+pub fn buffered_extract<'env, F>(
+    scope: &Scope<'env>,
+    vrt_entries: &'env MinEntries,
+    mmap: &'env Mmap,
+    cb: F
+) -> ()
+    where F: Fn(quick_xml::Reader<EntryBufReader>) -> () + Send + Clone + 'env
+{
+    let entries_partitioned = partition(
+        &vrt_entries,
+        UNZIP_READERS
+    );
+    println!("Extracting zip entries using {} threads", UNZIP_READERS);
+    for entry_slice in entries_partitioned {
+        let cb_clone = cb.clone();
+        scope.spawn(move |_| {
+            for entry in entry_slice {
+                let contents = read_buf(mmap, entry);
+                cb_clone(quick_xml::Reader::from_reader(contents));
+            }
+        });
+    }
+}
+
+pub fn count_words<'env, 'a>(
+    vrt_entries: &'env MinEntries,
+    mmap: &'env Mmap
+) -> VocabBuilder {
+    crossbeam::scope(|scope| {
+        let (snd, rcv) = unbounded();
+        buffered_extract(scope, vrt_entries, mmap, move |mut reader| {
+            let mut vocab = VocabBuilder::new();
+            let mut it = VrtFile::new(&mut reader, |vrt_text: VrtText| -> Option<()> {
                 vrt_text.for_each(|tok| {
-                    res.push(tok.to_owned().into_boxed_slice());
+                    vocab.add(tok);
                 });
-                None
+                Some(())
             });
-            res.into_iter()
-        })
+            while it.next().is_some() {}
+            println!("vocab len: {}", vocab.acc.len());
+            snd.send(vocab).unwrap()
+        });
+        rcv.iter().reduce(|mut acc, other| {
+            acc.merge(other);
+            acc
+        }).unwrap()
+    }).unwrap()
+}
+
+pub fn make_doc_bows<'env, 'a>(
+    scope: &Scope<'env>,
+    vrt_entries: &'env MinEntries,
+    mmap: &'env Mmap,
+    vocab: &'env VocabMap
+) -> Receiver<DocBow>
+{
+    let (snd, rcv) = bounded(1024);
+    buffered_extract(scope, vrt_entries, mmap, move |mut reader| {
+        for doc in VrtFile::new(&mut reader, |vrt_text: VrtText| {
+            let mut counts: BTreeMap<u32, u32> = BTreeMap::new();
+            let mut doc_count = 0;
+            vrt_text.for_each(|tok| {
+                let maybe_vocab_idx = vocab.get(tok);
+                if let Some(vocab_idx) = maybe_vocab_idx {
+                    *counts.entry(*vocab_idx).or_insert(0) += 1;
+                    doc_count += 1
+                }
+            });
+            Some((doc_count, counts))
+        }) {
+            snd.send(doc).unwrap();
+        }
+    });
+    rcv
+}
+
+pub struct VrtCorpus {
+    vrt_entries: MinEntries,
+    mmap: Mmap
+}
+
+impl VrtCorpus {
+    pub fn new(vrt_entries: MinEntries, mmap: Mmap) -> VrtCorpus {
+        VrtCorpus {
+            vrt_entries, mmap
+        }
+    }
+
+    pub fn new_from_path(path: &Path) -> VrtCorpus {
+        let (mmap, entries) = open_piz(path, is_vrt_file);
+        println!("{} entires in {}", entries.len(), path.to_str().unwrap());
+        if entries.len() == 0 {
+            panic!("No VRT files found in {}", path.to_str().unwrap());
+        }
+        VrtCorpus::new(
+            entries,
+            mmap
+        )
+    }
+}
+
+impl Corpus for VrtCorpus {
+    fn count_words(&self) -> (VocabBuilder, u32) {
+        let vocab = count_words(&self.vrt_entries, &self.mmap);
+        (vocab, self.vrt_entries.len() as u32)
+    }
+
+    fn gen_doc_bows<'env>(&'env self, scope: &Scope<'env>, vocab: &'env VocabMap) -> Receiver<DocBow> {
+        make_doc_bows(scope, &self.vrt_entries, &self.mmap, vocab)
+    }
 }
