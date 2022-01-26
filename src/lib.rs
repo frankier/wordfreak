@@ -1,6 +1,3 @@
-#![feature(type_alias_impl_trait)]
-#![feature(generic_associated_types)]
-
 pub mod termdocmat;
 pub mod opensubs18;
 pub mod parquet2;
