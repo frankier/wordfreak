@@ -1,4 +1,4 @@
-FROM rust:1.55 AS build
+FROM rust:1.58 AS build
 
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive \
